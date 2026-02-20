@@ -340,7 +340,7 @@ class AttendanceController extends Controller
                     'date' => $date,
                     'check_in' => '-',
                     'check_out' => '-',
-                    'hours' => '-',
+                    'hours' => 'Absent',
                 ];
                 $absentDates[] = $date;
             }

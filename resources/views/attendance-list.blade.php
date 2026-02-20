@@ -398,6 +398,18 @@
                                             'color': '#856404'
                                         });
                                     row.append(mergedCell);
+                                } else if (record.hours === 'Absent') {
+                                    // Merge cells and show Absent
+                                    const mergedCell = $('<td>')
+                                        .text('Absent')
+                                        .attr('colspan', 3)
+                                        .css({
+                                            'text-align': 'center',
+                                            //'background-color': '#f8d7da',
+                                            'font-weight': 'bold',
+                                            'color': '#721c24'
+                                        });
+                                    row.append(mergedCell);
                                 } else {
                                     // Normal cells
                                     row.append($('<td>').text(record.check_in));
