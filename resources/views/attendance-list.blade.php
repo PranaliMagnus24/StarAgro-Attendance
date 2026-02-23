@@ -304,7 +304,7 @@
                     const worksheetData = [];
 
                     // Add header row
-                    worksheetData.push(['Date', 'User Name', 'Check In', 'Check Out']);
+                    worksheetData.push(['Date', 'User Name', 'Check In', 'Check Out', 'Working Hours']);
 
                     // Add data rows
                     data.forEach(row => {
@@ -312,7 +312,8 @@
                             row.date,
                             row.user_name,
                             row.check_in,
-                            row.check_out
+                            row.check_out,
+                            row.working_hours || '-'
                         ]);
                     });
 

@@ -223,30 +223,98 @@ class AttendanceController extends Controller
     // Export attendance
     public function export(Request $request)
     {
-        $query = Attendance::with('user')
-            ->whereHas('user', function ($q) {
-                $q->whereNull('deleted_at');
-            })
-            ->latest('date');
+        // If user and date range are specified, export detailed report with all dates
+        if ($request->filled('user_id') && $request->filled('start_date') && $request->filled('end_date')) {
+            $userId = $request->user_id;
+            $startDate = Carbon::parse($request->start_date);
+            $endDate = Carbon::parse($request->end_date);
 
-        // Filter by USER
-        if ($request->filled('user_id')) {
-            $query->where('user_id', $request->user_id);
-        }
+            $user = User::find($userId);
 
-        // Filter by DATE RANGE
-        if ($request->filled('start_date') && $request->filled('end_date')) {
-            $query->whereBetween('date', [$request->start_date, $request->end_date]);
-        } elseif ($request->filled('start_date')) {
-            $query->whereDate('date', '>=', $request->start_date);
-        } elseif ($request->filled('end_date')) {
-            $query->whereDate('date', '<=', $request->end_date);
-        }
+            // Get all dates in the range
+            $allDates = [];
+            $currentDate = $startDate->copy();
+            while ($currentDate <= $endDate) {
+                $allDates[] = $currentDate->toDateString();
+                $currentDate->addDay();
+            }
 
-        $attendances = $query->get();
+            // Get attendances for the user and date range
+            $attendances = Attendance::where('user_id', $userId)
+                ->whereBetween('date', [$startDate->toDateString(), $endDate->toDateString()])
+                ->get()
+                ->keyBy('date');
 
-        return response()->json([
-            'data' => $attendances->map(function ($attendance) {
+            // Generate detailed records with absent and weekly off information
+            $exportData = [];
+            foreach ($allDates as $date) {
+                // Check if date is weekly off for the user
+                $dateDayOfWeek = Carbon::parse($date)->format('l'); // Get full day name (e.g., Monday)
+                $isWeeklyOff = false;
+
+                if (! empty($user->weekly_off)) {
+                    $userWeeklyOff = trim($user->weekly_off);
+                    if (strtolower($dateDayOfWeek) === strtolower($userWeeklyOff)) {
+                        $isWeeklyOff = true;
+                    }
+                }
+
+                if ($isWeeklyOff) {
+                    $exportData[] = [
+                        'date' => Carbon::parse($date)->format('d-m-Y'),
+                        'user_name' => $user->name,
+                        'check_in' => 'Weekly Off',
+                        'check_out' => 'Weekly Off',
+                        'working_hours' => 'Weekly Off',
+                    ];
+                } elseif (isset($attendances[$date])) {
+                    $attendance = $attendances[$date];
+                    $exportData[] = [
+                        'date' => Carbon::parse($date)->format('d-m-Y'),
+                        'user_name' => $user->name,
+                        'check_in' => $attendance->check_in_time
+                            ? Carbon::parse($attendance->check_in_time)->timezone('Asia/Kolkata')->format('h:i A')
+                            : '-',
+                        'check_out' => $attendance->check_out_time
+                            ? Carbon::parse($attendance->check_out_time)->timezone('Asia/Kolkata')->format('h:i A')
+                            : '-',
+                        'working_hours' => $this->calculateWorkingHours($attendance->check_in_time, $attendance->check_out_time),
+                    ];
+                } else {
+                    $exportData[] = [
+                        'date' => Carbon::parse($date)->format('d-m-Y'),
+                        'user_name' => $user->name,
+                        'check_in' => 'Absent',
+                        'check_out' => 'Absent',
+                        'working_hours' => 'Absent',
+                    ];
+                }
+            }
+        } else {
+            // If no specific user and date range, export raw attendance data
+            $query = Attendance::with('user')
+                ->whereHas('user', function ($q) {
+                    $q->whereNull('deleted_at');
+                })
+                ->latest('date');
+
+            // Filter by USER
+            if ($request->filled('user_id')) {
+                $query->where('user_id', $request->user_id);
+            }
+
+            // Filter by DATE RANGE
+            if ($request->filled('start_date') && $request->filled('end_date')) {
+                $query->whereBetween('date', [$request->start_date, $request->end_date]);
+            } elseif ($request->filled('start_date')) {
+                $query->whereDate('date', '>=', $request->start_date);
+            } elseif ($request->filled('end_date')) {
+                $query->whereDate('date', '<=', $request->end_date);
+            }
+
+            $attendances = $query->get();
+
+            $exportData = $attendances->map(function ($attendance) {
                 return [
                     'date' => Carbon::parse($attendance->date)
                         ->timezone('Asia/Kolkata')
@@ -262,8 +330,13 @@ class AttendanceController extends Controller
                             ->timezone('Asia/Kolkata')
                             ->format('h:i A')
                         : '-',
+                    'working_hours' => $this->calculateWorkingHours($attendance->check_in_time, $attendance->check_out_time),
                 ];
-            }),
+            });
+        }
+
+        return response()->json([
+            'data' => $exportData,
         ]);
     }
 
