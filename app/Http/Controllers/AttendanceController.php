@@ -50,13 +50,15 @@ class AttendanceController extends Controller
                             ->format('h:i A')
                         : '-'
                 )
+                ->addColumn('auto_checkout', fn ($row) => $row->auto_checkout ? '<span class="badge bg-warning text-dark">Auto</span>' : '<span class="badge bg-success">Manual</span>'
+                )
                 ->addColumn('date', fn ($row) => Carbon::parse($row->date)
                     ->timezone('Asia/Kolkata')
                     ->format('d-m-Y')
                 )
                 ->addColumn('action', fn ($row) => '<button class="btn btn-primary btn-sm show-details" data-id="'.$row->id.'">View</button>'
                 )
-                ->rawColumns(['checkbox', 'action'])
+                ->rawColumns(['checkbox', 'action', 'auto_checkout'])
                 ->make(true);
         }
 
@@ -65,7 +67,9 @@ class AttendanceController extends Controller
             ->select('id', 'name')
             ->get();
 
-        return view('attendance-list', compact('users'));
+        $authRole = auth()->user()->role;
+
+        return view('attendance-list', compact('users', 'authRole'));
     }
 
     public function checkIn(Request $request)
@@ -278,7 +282,7 @@ class AttendanceController extends Controller
                         'check_out' => $attendance->check_out_time
                             ? Carbon::parse($attendance->check_out_time)->timezone('Asia/Kolkata')->format('h:i A')
                             : '-',
-                        'working_hours' => $this->calculateWorkingHours($attendance->check_in_time, $attendance->check_out_time),
+                        'working_hours' => $this->calculateWorkingHours($attendance->check_in_time, $attendance->check_out_time, $attendance->auto_checkout),
                     ];
                 } else {
                     $exportData[] = [
@@ -330,13 +334,36 @@ class AttendanceController extends Controller
                             ->timezone('Asia/Kolkata')
                             ->format('h:i A')
                         : '-',
-                    'working_hours' => $this->calculateWorkingHours($attendance->check_in_time, $attendance->check_out_time),
+                    'working_hours' => $this->calculateWorkingHours($attendance->check_in_time, $attendance->check_out_time, $attendance->auto_checkout),
                 ];
             });
         }
 
+        // Calculate total price for export (if user and date range are specified)
+        $totalPrice = 0;
+        if (isset($user) && $user->price > 0) {
+            $totalWorkingHours = 0;
+            $totalWorkingDays = 0;
+
+            foreach ($attendances as $attendance) {
+                if ($attendance->check_in_time && $attendance->check_out_time) {
+                    $totalWorkingDays++;
+                    $totalWorkingHours += $this->calculateWorkingHoursInMinutes($attendance->check_in_time, $attendance->check_out_time, $attendance->auto_checkout);
+                }
+            }
+
+            $totalWorkingHours = round($totalWorkingHours / 60, 2);
+
+            if ($user->duration === 'hour') {
+                $totalPrice = round($totalWorkingHours * $user->price, 2);
+            } elseif ($user->duration === 'day') {
+                $totalPrice = round($totalWorkingDays * $user->price, 2);
+            }
+        }
+
         return response()->json([
             'data' => $exportData,
+            'total_price' => $totalPrice,
         ]);
     }
 
@@ -401,12 +428,12 @@ class AttendanceController extends Controller
                     'date' => $date,
                     'check_in' => $attendance->check_in_time ? Carbon::parse($attendance->check_in_time)->timezone('Asia/Kolkata')->format('h:i A') : '-',
                     'check_out' => $attendance->check_out_time ? Carbon::parse($attendance->check_out_time)->timezone('Asia/Kolkata')->format('h:i A') : '-',
-                    'hours' => $this->calculateWorkingHours($attendance->check_in_time, $attendance->check_out_time),
+                    'hours' => $this->calculateWorkingHours($attendance->check_in_time, $attendance->check_out_time, $attendance->auto_checkout),
                 ];
 
                 if ($attendance->check_in_time && $attendance->check_out_time) {
                     $totalWorkingDays++;
-                    $totalWorkingHours += $this->calculateWorkingHoursInMinutes($attendance->check_in_time, $attendance->check_out_time);
+                    $totalWorkingHours += $this->calculateWorkingHoursInMinutes($attendance->check_in_time, $attendance->check_out_time, $attendance->auto_checkout);
                 }
             } else {
                 $dailyRecords[] = [
@@ -434,12 +461,26 @@ class AttendanceController extends Controller
         // Convert total working hours from minutes to hours with decimal places
         $totalWorkingHours = round($totalWorkingHours / 60, 2);
 
+        // Calculate total price
+        $totalPrice = 0;
+        if ($user->price > 0) {
+            if ($user->duration === 'hour') {
+                // Calculate price based on hours
+                $totalPrice = round($totalWorkingHours * $user->price, 2);
+            } elseif ($user->duration === 'day') {
+                // Calculate price based on days
+                $totalPrice = round($totalWorkingDays * $user->price, 2);
+            }
+        }
+
         return response()->json([
             'user' => [
                 'id' => $user->id,
                 'name' => $user->name,
                 'email' => $user->email,
                 'phone' => $user->phone,
+                'price' => $user->price,
+                'duration' => $user->duration,
             ],
             'date_range' => [
                 'start' => $startDate->format('d-m-Y'),
@@ -451,6 +492,7 @@ class AttendanceController extends Controller
                 'absent_days' => count($absentDates),
                 'weekly_off_days' => $weeklyOffDays,
                 'total_working_hours' => $totalWorkingHours,
+                'total_price' => $totalPrice,
             ],
             'absent_dates' => array_map(function ($date) {
                 return Carbon::parse($date)->format('d-m-Y');
@@ -464,7 +506,7 @@ class AttendanceController extends Controller
     }
 
     // Calculate working hours
-    private function calculateWorkingHours($checkIn, $checkOut)
+    private function calculateWorkingHours($checkIn, $checkOut, $autoCheckout = false)
     {
         if (! $checkIn || ! $checkOut) {
             return '-';
@@ -473,13 +515,83 @@ class AttendanceController extends Controller
         $checkInTime = Carbon::parse($checkIn);
         $checkOutTime = Carbon::parse($checkOut);
 
-        $diff = $checkInTime->diff($checkOutTime);
+        if ($autoCheckout) {
+            // For auto checkout, use configured auto checkout duration
+            $autoCheckoutHours = config('attendance.auto_checkout_hours', 9);
+            $maxCheckOutTime = $checkInTime->copy()->addHours($autoCheckoutHours);
+            $diff = $checkInTime->diff($maxCheckOutTime);
+        } else {
+            $diff = $checkInTime->diff($checkOutTime);
+        }
 
         return sprintf('%02d:%02d', $diff->h, $diff->i);
     }
 
-    //  Calculate working hours in minutes
-    private function calculateWorkingHoursInMinutes($checkIn, $checkOut)
+    // Manual attendance entry (Admin only)
+    public function manualAttendance(Request $request)
+    {
+        try {
+            $authUser = auth()->user();
+
+            if ($authUser->role !== 'admin') {
+                return response()->json(['message' => 'Unauthorized.'], 403);
+            }
+
+            $request->validate([
+                'user_id' => 'required|exists:users,id',
+                'date' => 'required|date',
+                'check_in_time' => 'nullable|date_format:H:i',
+                'check_out_time' => 'nullable|date_format:H:i',
+            ]);
+
+            $userId = $request->user_id;
+            $date = $request->date;
+
+            // Check if attendance record exists for this user and date
+            $attendance = Attendance::where('user_id', $userId)
+                ->where('date', $date)
+                ->latest('id')
+                ->first();
+
+            if (! $attendance) {
+                $attendance = Attendance::create([
+                    'user_id' => $userId,
+                    'date' => $date,
+                    'attended_by' => $authUser->id,
+                ]);
+            }
+
+            $updateData = [
+                'attended_by' => $authUser->id,
+            ];
+
+            if ($request->filled('check_in_time')) {
+                $checkInDateTime = Carbon::parse($date.' '.$request->check_in_time, 'Asia/Kolkata');
+                $updateData['check_in_time'] = $checkInDateTime->setTimezone('UTC');
+            }
+
+            if ($request->filled('check_out_time')) {
+                $checkOutDateTime = Carbon::parse($date.' '.$request->check_out_time, 'Asia/Kolkata');
+                $updateData['check_out_time'] = $checkOutDateTime->setTimezone('UTC');
+            }
+
+            $attendance->update($updateData);
+
+            return response()->json(['message' => 'Attendance marked successfully.']);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            \Log::error('Manual attendance validation error: '.print_r($e->errors(), true));
+
+            return response()->json(['message' => 'Validation failed: '.implode(', ', $e->errors()), 422]);
+        } catch (\Exception $e) {
+            \Log::error('Manual attendance error: '.$e->getMessage());
+            \Log::error('Stack trace: '.$e->getTraceAsString());
+
+            return response()->json(['message' => 'Something went wrong'], 500);
+        }
+    }
+
+    // Calculate working hours in minutes
+    private function calculateWorkingHoursInMinutes($checkIn, $checkOut, $autoCheckout = false)
     {
         if (! $checkIn || ! $checkOut) {
             return 0;
@@ -487,6 +599,14 @@ class AttendanceController extends Controller
 
         $checkInTime = Carbon::parse($checkIn);
         $checkOutTime = Carbon::parse($checkOut);
+
+        if ($autoCheckout) {
+            // For auto checkout, use configured auto checkout duration
+            $autoCheckoutHours = config('attendance.auto_checkout_hours', 9);
+            $maxCheckOutTime = $checkInTime->copy()->addHours($autoCheckoutHours);
+
+            return $checkInTime->diffInMinutes($maxCheckOutTime);
+        }
 
         return $checkInTime->diffInMinutes($checkOutTime);
     }

@@ -12,6 +12,14 @@
                 <div class="d-flex justify-content-between align-items-center">
                     <h4 class="mb-0"><i class="bi bi-file-earmark-text"></i> Attendance List</h4>
                     <div class="d-flex gap-2">
+                        <!-- Manual Attendance button (Admin only) -->
+                        @if($authRole === 'admin')
+                        <button id="manualAttendanceBtn" class="btn btn-warning d-none d-sm-inline-block"
+                            data-bs-toggle="tooltip" data-bs-placement="top" title="Manual Attendance">
+                            <i class="bi bi-pencil-square"></i> Manual Attendance
+                        </button>
+                        @endif
+
                         <!-- Report button -->
                         <button id="generateReport" class="btn btn-primary d-none d-sm-inline-block"
                             data-bs-toggle="tooltip" data-bs-placement="top" title="Generate Report">
@@ -90,6 +98,7 @@
                                 <th>User Name</th>
                                 <th>Check In</th>
                                 <th>Check Out</th>
+                                <th>Auto Checkout</th>
                                 <th>Action</th>
                             </tr>
                         </thead>
@@ -136,6 +145,49 @@
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Manual Attendance Modal -->
+    <div class="modal fade" id="manualAttendanceModal" tabindex="-1" aria-labelledby="manualAttendanceModalLabel"
+        aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="manualAttendanceModalLabel">Manual Attendance</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="manualAttendanceForm">
+                        @csrf
+                        <div class="mb-3">
+                            <label for="manualUserSelect" class="form-label">Select User</label>
+                            <select id="manualUserSelect" name="user_id" class="form-select" required>
+                                <option value="">Select User</option>
+                                @foreach ($users as $user)
+                                    <option value="{{ $user->id }}">{{ $user->name }}</option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div class="mb-3">
+                            <label for="manualDateInput" class="form-label">Select Date</label>
+                            <input type="date" id="manualDateInput" name="date" class="form-control" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="manualCheckInTime" class="form-label">Check In Time</label>
+                            <input type="time" id="manualCheckInTime" name="check_in_time" class="form-control">
+                        </div>
+                        <div class="mb-3">
+                            <label for="manualCheckOutTime" class="form-label">Check Out Time</label>
+                            <input type="time" id="manualCheckOutTime" name="check_out_time" class="form-control">
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                            <button type="submit" class="btn btn-primary">Save Attendance</button>
+                        </div>
+                    </form>
                 </div>
             </div>
         </div>
@@ -197,6 +249,14 @@
                                 <div class="card-body">
                                     <h6 class="card-title">Total Working Hours</h6>
                                     <p class="card-text fs-3 text-dark" id="reportTotalWorkingHours">0</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-2">
+                            <div class="card text-white">
+                                <div class="card-body">
+                                    <h6 class="card-title">Total Price</h6>
+                                    <p class="card-text fs-3 text-dark" id="reportTotalPrice">0</p>
                                 </div>
                             </div>
                         </div>
@@ -267,6 +327,7 @@
                         { data: 'user_name' },
                         { data: 'check_in' },
                         { data: 'check_out' },
+                        { data: 'auto_checkout', orderable: false, searchable: false },
                         { data: 'action', orderable: false, searchable: false }
                     ]
                 });
@@ -299,7 +360,7 @@
                 });
 
                 // Export to Excel function
-                function exportToExcel(data, filename = 'attendance-list') {
+                function exportToExcel(data, filename = 'attendance-list', totalPrice = 0) {
                     // Create worksheet data
                     const worksheetData = [];
 
@@ -316,6 +377,11 @@
                             row.working_hours || '-'
                         ]);
                     });
+
+                    // Add total price if available
+                    if (totalPrice > 0) {
+                        worksheetData.push(['', '', '', 'Total Price:', '₹' + totalPrice.toFixed(2)]);
+                    }
 
                     // Create CSV content
                     const csvContent = worksheetData.map(row =>
@@ -371,6 +437,7 @@
                             $('#reportAbsentDays').text(response.summary.absent_days);
                             $('#reportWeeklyOffDays').text(response.summary.weekly_off_days);
                             $('#reportTotalWorkingHours').text(response.summary.total_working_hours + ' hrs');
+                            $('#reportTotalPrice').text('₹' + response.summary.total_price.toFixed(2));
 
                             // Populate absent dates
                             if (response.absent_dates.length > 0) {
@@ -441,6 +508,34 @@
                     });
                 });
 
+                // Manual attendance button click event
+                $('#manualAttendanceBtn').on('click', function () {
+                    $('#manualAttendanceForm')[0].reset();
+                    $('#manualAttendanceModal').modal('show');
+                });
+
+                // Manual attendance form submission
+                $('#manualAttendanceForm').on('submit', function (e) {
+                    e.preventDefault();
+
+                    const formData = $(this).serialize();
+
+                    $.ajax({
+                        url: '{{ route("attendance.manual") }}',
+                        type: 'POST',
+                        data: formData,
+                        success: function (response) {
+                            alert(response.message);
+                            $('#manualAttendanceModal').modal('hide');
+                            table.draw();
+                        },
+                        error: function (xhr) {
+                            const errorMessage = xhr.responseJSON?.message || 'Error marking attendance';
+                            alert(errorMessage);
+                        }
+                    });
+                });
+
                 // Export button click event (desktop and mobile)
                 $('#exportExcel, #exportExcelMobile').on('click', function () {
                     // Show loading indicator
@@ -472,7 +567,7 @@
                                 }
 
                                 // Export to Excel
-                                exportToExcel(response.data, filename);
+                                exportToExcel(response.data, filename, response.total_price);
                             } else {
                                 alert('No data to export');
                             }
